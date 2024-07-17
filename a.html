@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>赛博地球</title>
+    <style>
+        body { margin: 0; background-color: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            background-color: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        #toggleWireframe {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 10px;
+            background-color: rgba(255,255,255,0.7);
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="info"></div>
+    <button id="toggleWireframe">Toggle Wireframe</button>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+        const geometry = new THREE.SphereGeometry(5, 64, 64);
+        const material = new THREE.MeshBasicMaterial({
+            map: new THREE.TextureLoader().load('https://cdn.jsdelivr.net/gh/astronexus/HYG-Database@master/earth.jpg')
+        });
+        const earth = new THREE.Mesh(geometry, material);
+        scene.add(earth);
+
+        const wireframeGeometry = new THREE.SphereGeometry(5.05, 64, 64);
+        const wireframeMaterial = new THREE.MeshBasicMaterial({
+            color: 0x00ff00,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.3
+        });
+        const wireframe = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
+        scene.add(wireframe);
+
+        const countryObjects = new Map();
+
+        fetch('https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson')
+            .then(response => response.json())
+            .then(data => {
+                const countries = data.features;
+
+                countries.forEach(country => {
+                    if (country.geometry.type === "Polygon") {
+                        drawCountry(country.geometry.coordinates[0], country.properties.name);
+                    } else if (country.geometry.type === "MultiPolygon") {
+                        country.geometry.coordinates.forEach(polygon => {
+                            drawCountry(polygon[0], country.properties.name);
+                        });
+                    }
+                });
+
+                function drawCountry(ring, countryName) {
+                    const shape = new THREE.Shape();
+                    const points = [];
+                    ring.forEach((point, index) => {
+                        const lambda = -point[0] * Math.PI / 180;
+                        const phi = point[1] * Math.PI / 180;
+                        const x = 5.05 * Math.cos(phi) * Math.cos(lambda);
+                        const y = 5.05 * Math.sin(phi);
+                        const z = 5.05 * Math.cos(phi) * Math.sin(lambda);
+                        points.push(new THREE.Vector3(x, y, z));
+                        if (index === 0) {
+                            shape.moveTo(lambda, phi);
+                        } else {
+                            shape.lineTo(lambda, phi);
+                        }
+                    });
+
+                    const geometry = new THREE.ShapeGeometry(shape);
+                    const material = new THREE.MeshBasicMaterial({
+                        color: 0x00ffff,
+                        transparent: true,
+                        opacity: 0.0,
+                        side: THREE.DoubleSide
+                    });
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.userData.countryName = countryName;
+
+                    // 将平面几何体投影到球面上
+                    const positionAttribute = geometry.attributes.position;
+                    for (let i = 0; i < positionAttribute.count; i++) {
+                        const vertex = new THREE.Vector3();
+                        vertex.fromBufferAttribute(positionAttribute, i);
+                        const lambda = vertex.x;
+                        const phi = vertex.y;
+                        vertex.x = 5.05 * Math.cos(phi) * Math.cos(lambda);
+                        vertex.y = 5.05 * Math.sin(phi);
+                        vertex.z = 5.05 * Math.cos(phi) * Math.sin(lambda);
+                        positionAttribute.setXYZ(i, vertex.x, vertex.y, vertex.z);
+                    }
+                    geometry.computeVertexNormals();
+
+                    earth.add(mesh);
+
+                    const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+                    const lineMaterial = new THREE.LineBasicMaterial({ 
+                        color: 0x00ffff, 
+                        transparent: true, 
+                        opacity: 1,
+                        depthTest: true,
+                        depthWrite: false,
+                        linewidth: 2
+                    });
+                    const line = new THREE.Line(lineGeometry, lineMaterial);
+                    earth.add(line);
+
+                    const thickLineMaterial = new THREE.LineBasicMaterial({ 
+                        color: 0x00ffff, 
+                        transparent: true, 
+                        opacity: 0.3,
+                        depthTest: true,
+                        depthWrite: false,
+                        linewidth: 4
+                    });
+                    const thickLine = new THREE.Line(lineGeometry, thickLineMaterial);
+                    earth.add(thickLine);
+
+                    if (!countryObjects.has(countryName)) {
+                        countryObjects.set(countryName, []);
+                    }
+                    countryObjects.get(countryName).push(mesh, line, thickLine);
+                }
+            });
+
+        camera.position.z = 15;
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        let hoveredCountry = null;
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(earth.children, true);
+
+            let foundCountry = null;
+            for (let i = 0; i < intersects.length; i++) {
+                if (intersects[i].object.userData.countryName) {
+                    foundCountry = intersects[i].object.userData.countryName;
+                    break;
+                }
+            }
+
+            if (foundCountry !== hoveredCountry) {
+                if (hoveredCountry) {
+                    resetCountryHighlight(hoveredCountry);
+                }
+                if (foundCountry) {
+                    highlightCountry(foundCountry);
+                }
+                hoveredCountry = foundCountry;
+                updateInfoBox();
+            }
+        }
+
+        function highlightCountry(countryName) {
+            const objects = countryObjects.get(countryName);
+            if (objects) {
+                objects.forEach(obj => {
+                    if (obj instanceof THREE.Line) {
+                        obj.material.color.setHex(0xff0000);
+                        obj.material.opacity = 1;
+                    }
+                    obj.renderOrder = 1;
+                });
+            }
+        }
+
+        function resetCountryHighlight(countryName) {
+            const objects = countryObjects.get(countryName);
+            if (objects) {
+                objects.forEach(obj => {
+                    if (obj instanceof THREE.Line) {
+                        obj.material.color.setHex(0x00ffff);
+                        if (obj.material.linewidth === 2) {
+                            obj.material.opacity = 1;
+                        } else {
+                            obj.material.opacity = 0.3;
+                        }
+                    }
+                    obj.renderOrder = 0;
+                });
+            }
+        }
+
+        function updateInfoBox() {
+            const infoBox = document.getElementById('info');
+            if (hoveredCountry) {
+                infoBox.textContent = hoveredCountry;
+                infoBox.style.display = 'block';
+            } else {
+                infoBox.style.display = 'none';
+            }
+        }
+
+        window.addEventListener('mousemove', onMouseMove, false);
+
+        const toggleWireframeButton = document.getElementById('toggleWireframe');
+        toggleWireframeButton.addEventListener('click', function() {
+            wireframe.visible = !wireframe.visible;
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            earth.rotation.y += 0.001;
+            wireframe.rotation.y += 0.001;
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
